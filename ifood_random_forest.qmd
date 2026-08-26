@@ -1,0 +1,228 @@
+---
+title: "iFood Random Forest Analysis"
+format: docx
+editor: visual
+---
+
+Our previous client, iFood, believes that a customer's willingness to respond to marketing promotions is a proxy for their overall value as a customer. They have asked for help identifying consumers that are most likely to respond to promotions. More specifically, we are going to perform a *response classification* analysis, where we assign consumers into one of three groups based on their previous campaign response levels - "Highly Responsive", "Occasionally Responsive", and "Non-responsive". Our task is to build a model that predicts which customers fall into each segment.
+
+## Preliminaries and Data Cleaning
+
+Load libraries.
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+```
+
+Import the iFood data.
+
+```{r}
+(ifood <- read_csv("ifood.csv"))
+```
+
+Drop any observations with missing values.
+
+```{r}
+ifood <- ifood |>
+  drop_na()
+```
+
+Define our dependent variable.
+
+```{r}
+ifood <- ifood |>
+  mutate(response_total = AcceptedCmp1 + AcceptedCmp2 + AcceptedCmp3 +
+           AcceptedCmp4 + AcceptedCmp5 + Response)
+```
+
+Visualize the distribution of how many times consumers have responded to previous marketing campaigns.
+
+```{r}
+ifood |>
+  ggplot(aes(x = response_total)) +
+  geom_histogram() +
+  labs(x = "Number of Campaign Responses",
+       y = "Count",
+       title = "Consumer-Level Campaign Response Distribution")
+```
+
+Define segment based on above distribution. Convert `segment` into a factor for our model.
+
+```{r}
+ifood <- ifood |>
+  mutate(
+    segment = case_when(
+      response_total == 0 ~ "Nonresponsive",
+      response_total %in% c(2, 3, 4, 5) ~ "Highly Responsive",
+      response_total == 1 ~ "Semi-Responsive"),
+    segment = factor(segment)
+  )
+```
+
+Remove variables that we used to compute segment. If we leave these variables in the data, the model will be able to perfectly predict `segment` - essentially, the model would be using `segment` to predict `segment`, which isn't useful.
+
+```{r}
+ifood <- ifood |>
+  select(-c(AcceptedCmp3:AcceptedCmp2), -Response, -response_total)
+```
+
+Remove customer ID variable.
+
+```{r}
+ifood <- ifood |>
+  select(-ID)
+```
+
+Replace 'nonsense' values of marital status with "Single".
+
+```{r}
+ifood |>
+  distinct(Marital_Status)
+
+nonsense_vals <- c("Alone", "Absurd", "YOLO")
+
+ifood <- ifood |>
+  mutate(Marital_Status = if_else(Marital_Status %in% nonsense_vals,
+                                  "Single",
+                                  Marital_Status))
+```
+
+## Pre-Processing
+
+Create a new variable for the number of days since someone became a customer (i.e., customer age). As an example, let's pull out a single customer's date and compute how old they are as a customer.
+
+```{r}
+(date <- ifood |>
+  slice(1) |>
+  select(Dt_Customer))
+```
+
+Use `Sys.Date()` to reference today's date and compute the difference which is reported in days.
+
+```{r}
+date |>
+  mutate(today = Sys.Date(),
+         customer_age = as.numeric(today - Dt_Customer))
+```
+
+Repeat for the full data.
+
+```{r}
+ifood <- ifood |>
+  mutate(customer_age = as.numeric(Sys.Date() - Dt_Customer)) |>
+  select(-Dt_Customer)
+```
+
+Define train-test split and the cross-validation folds. Notice that the cross validation folds are created based on the training data only.
+
+```{r}
+set.seed(42)
+
+ifood_split <- initial_split(ifood, prop = 0.75, strata = segment)
+
+# Use v-fold cross-validation based on segment.
+ifood_cv <- vfold_cv(training(ifood_split), v = 7, strata = segment)
+```
+
+Define models. We are going to have the baseline random forest and a tunable random forest. We'll compare their performance using cross validation and select the best model for evaluation on the test data.
+
+```{r}
+rf_model <- rand_forest() |> 
+  set_engine(engine = "randomForest") |> 
+  set_mode("classification")
+
+rf_model_tuned <- rand_forest(mtry = tune(), 
+                        trees = tune(), 
+                        min_n = tune()) |> 
+  set_engine(engine = "randomForest") |> 
+  set_mode("classification")
+```
+
+Define recipe. We include a set for dummy variables for all nominal variables (this should apply to `Education` and `Marital Status`)
+
+```{r}
+# Feature engineering.
+ifood_recipe <- training(ifood_split) |>
+  recipe(segment ~ .) |>
+  # create dummy variables for all non-numeric variables! (exclude the outcome - 
+  # we don't want dummies for segment)
+  # step_novel allows the recipe to account for factor levels (e.g., a dummy variable) that exists in the training data but not the validation or test data)
+  step_dummy(all_nominal(), -segment)
+
+ifood_recipe
+```
+
+Create two workflows, one for the baseline model and one for the tunable model.
+
+```{r}
+rf_workflow <- workflow() |>
+  add_recipe(ifood_recipe) |>
+  add_model(rf_model)
+
+rf_workflow_tuned <- workflow() |>
+  add_recipe(ifood_recipe) |>
+  add_model(rf_model_tuned)
+```
+
+Train and evaluate the baseline model on the cross-validation folds.
+
+```{r}
+cv_results <- rf_workflow |> 
+  fit_resamples(resamples = ifood_cv)
+```
+
+Do the same training and evaluation for the tunable model, but do it over a grid of hyperparameter values.
+
+```{r}
+cv_results_tuned <- rf_workflow_tuned |>
+  tune_grid(resamples = ifood_cv)
+```
+
+Compute the average accuracy across folds for the baseline model.
+
+```{r}
+cv_results |>
+  collect_metrics() |>
+  filter(.metric == "accuracy")
+```
+
+We compute average accuracy across all folds for the tuned models and arrange them in descending order. The best model based on cross validation achieved 77% accuracy, compared to the 78% accuracy of the baseline model.
+
+```{r}
+cv_results_tuned |>
+  collect_metrics() |>
+  filter(.metric == "accuracy") |>
+  arrange(desc(mean))
+```
+
+We make our modeling decision based on the cross-validation results. So, we select the baseline model as our final model, and evaluate it on the test data.
+
+```{r}
+# Fit the baseline workflow to the whole training dataset.
+final_fit <- fit(rf_workflow, data = training(ifood_split))
+```
+
+Compute test data accuracy for the baseline model.
+
+```{r}
+# Compute model accuracy.
+final_fit |> 
+  predict(new_data = testing(ifood_split)) |>
+  bind_cols(testing(ifood_split)) |>
+  accuracy(truth = segment, estimate = .pred_class)
+```
+
+Our accuracy on this test data is consistent with the average accuracy across CV folds (within about 1%) so we can be confident that we are not overfitting the data.
+
+Finally, we compute a confusion matrix.
+
+```{r}
+# Compute model accuracy.
+final_fit |> 
+  predict(new_data = testing(ifood_split)) |>
+  bind_cols(testing(ifood_split)) |>
+  conf_mat(truth = segment, estimate = .pred_class)
+```
+
+Let's break down each segment. For `Nonresponsive` customers, (second column), the model does a very good job at correctly classifying. It got 393 out of 403 correct. For `Semi-Responsive` and `Highly Responsive`, the model didn't do quite as well. The model had a little less than 50% accuracy for `Highly Responsive` customers, and very low accuracy for `Semi-Responsive` customers (only 11 out of 93). Ideally, we would want to find a model for iFood that wasn't as likely to classify `Highly Responsive` and `Semi-Responsive` as `Nonresponsive`, since these are valuable customers that the model is miss-classifying.

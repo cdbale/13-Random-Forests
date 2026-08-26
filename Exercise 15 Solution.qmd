@@ -7,7 +7,7 @@ format: docx
 Return to the previous exercise.
 
 1. Try and improve on the predictive fit by using a random forest.
-2. After fitting a random forest, use cross-validation and hyperparameter tuning on the random forest. Finalize the best-fitting model and compute predictive fit. Have you improved on the previous best-fitting model?
+2. After fitting a random forest, use cross-validation and hyperparameter tuning on the random forest. Finalize the best-fitting model and compute predictive fit. Have you improved on the best-fitting model?
 3. Render the Quarto document into Word and upload to Canvas.
 
 **Five points total, one point each for:**
@@ -31,7 +31,7 @@ library(tidymodels)
 set.seed(42)
 
 # Import data and wrangle S1 into segment.
-roomba_survey <- read_csv("roomba_survey.csv") |> 
+roomba_survey <- read_csv(here::here("Data", "roomba_survey.csv")) |> 
   rename(segment = S1) |> 
   mutate(
     segment = case_when(
@@ -59,7 +59,7 @@ roomba_recipe <- training(roomba_split) |>
 
 ## Random Forest
 
-Let's create a workflow for a random forest then update it for subsequent models.
+Let's create a workflow for random then update it for subsequent models.
 
 ```{r}
 # Random forest.
@@ -89,8 +89,6 @@ The logistic regression and decision tree previously had a tied predictive fit a
 Let's see if we can improve the prediction by tuning the random forest hyperparameters.
 
 ```{r}
-set.seed(42)
-
 # Use v-fold cross-validation based on segment.
 roomba_cv <- vfold_cv(training(roomba_split), v = 10, strata = segment)
 
@@ -125,5 +123,5 @@ fit_wf_rf |>
   accuracy(truth = segment, estimate = .pred_class)
 ```
 
-By tuning the hyperparameters, we get the same predictive accuracy of ~72%, so the cross-validation did not net us an improvement in model performance.
+By tuning the hyperparameters, we only get a predictive fit accuracy of `0.690`. It looks like the defaults for the hyperparameters are sufficient for the best predictive fit.
 
