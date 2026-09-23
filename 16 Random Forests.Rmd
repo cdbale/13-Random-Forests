@@ -7,6 +7,15 @@ output:
     css: style.css
 ---
 
+## Key Concepts | Tune Without Learning the Test Set
+
+- **Generalization:** learn repeatable patterns rather than memorize training observations.
+- **Hyperparameters:** compare settings that control how a model learns.
+- **Training, validation, and testing:** give fitting, selection, and final assessment distinct roles.
+- **Iteration and uncertainty:** automate repeated fits and assess how results vary.
+
+Today we develop lecture 13's **tune** and **evaluate** stages for supervised prediction.
+
 ## Marketing Analytics Process
 
 <center>
@@ -32,11 +41,21 @@ Guess my height!
 Why have one decision tree when you can have a *forest* of decision trees?
 
 - A decision tree splits based on $X$ variables that are strong predictors of $Y$.
-- There can be predictor variables that *dominate* predictions (think overfitting).
-- To avoid this, a random forest will use a *random* subset of $X$ variables for each decision tree.
+- A flexible tree can fit sample-specific noise; many similar trees may repeat the same mistakes.
+- A random forest grows trees on resampled observations and considers a random subset of predictors at each split, making the trees less alike.
 - Do this for a bunch of decision trees and combine the predictions of all trees.
 
 This is a **random forest**. In general, the idea of combining the predictions of many models is known as an **ensemble**.
+
+## Prediction Does Not Require an Effect Coefficient
+
+Lecture 13 contrasted explaining a relationship with predicting an outcome. A forest learns many split rules rather than a single slope for each predictor.
+
+- We can evaluate whether those rules predict Roomba segments accurately.
+- We can inspect patterns, but they do not identify what would happen if we changed a customer's attitudes or sent a promotion.
+- "Black box" describes difficulty interpreting the combined rule; it does not mean the model has no learned structure or cannot be evaluated.
+
+Our criterion is useful prediction on new observations, not whether a predictor has a statistically significant regression coefficient.
 
 ## Do Some Feature Engineering!
 
@@ -130,7 +149,7 @@ rf_fit_01 <- fit(rf_wf_01, data = training(roomba_split))
 
 ## Evaluate Predictive Fit
 
-Evaluate predictive accuracy on the test data.
+For this initial demonstration, evaluate predictive accuracy on the held-out data. Do not use this result to choose hyperparameters; the next section introduces validation for that purpose.
 
 ```{r}
 # Compute model accuracy.
@@ -140,22 +159,48 @@ rf_fit_01 |>
   accuracy(truth = segment, estimate = .pred_class)
 ```
 
+## Three Data Roles in the Predictive Workflow
+
+Lecture 13 introduced validation because trying many models creates another opportunity to overfit.
+
+| Data role | Purpose |
+|---|---|
+| Training / analysis portion of a fold | Learn preprocessing settings and fit a candidate model. |
+| Validation / assessment portion of a fold | Compare predictors, preprocessing choices, and hyperparameters. |
+| Final test set | Assess the selected model without making further choices from its results. |
+
+Cross-validation creates the first two roles **within the training set**. In a new analysis, save the final test set until the model is selected; our earlier test prediction was a demonstration.
+
 ## New Method: Cross-Validation
 
-In a nutshell: train and evaluate the model on *multiple* train-test data splits.
+In a nutshell: repeatedly fit and evaluate the model on analysis-validation splits of the training data.
 
 - *Why?* We could get a `test` data set that was particularly difficult/easy to predict.
 
 - *What does cross-validation enable us to do?*
 
-1. Obtain a more accurate estimate of the predictive accuracy of our model. It's Similar to the idea of using multiple decision tree models (a random forest) to get a better prediction of $Y$.
+1. Estimate performance across several held-out portions instead of depending on one potentially easy or difficult split.
 2. Choose hyperparameters that give the best performance overall (across different cross-validation splits).
 
 ## How Does Cross-Validation Work?
 
-We split data into "folds" (subsections) and each fold is treated as testing data once. These pseudo-test data sets are called `validation` data sets. We are validating our model performance in each round of cross-validation.
+We split the training data into "folds" (subsections). Each fold serves as validation data once while the remaining folds are used for fitting. The separate final test set is not part of this rotation.
 
 See whiteboard!
+
+## Iteration | Repeat a Task Without Copying It
+
+Lecture 13 suggested coding an iteration when we would otherwise copy and paste the same task repeatedly. Its basic `for` loop was:
+
+```{r}
+empty_vector <- vector(mode = "double", length = 7)
+for (i in seq_along(empty_vector)) {
+  empty_vector[i] <- 1 + i
+}
+empty_vector
+```
+
+Allocate space for the results, visit each index, and store one result per iteration. In cross-validation, the repeated task is **fit on the analysis data and score on the validation data**.
 
 ## Cross-Validation Set Up
 
@@ -172,7 +217,9 @@ roomba_cv
 
 ---
 
-Instead of `fit()`, we need a function made to deal with all of these folds. Internally, this is actually a *for loop*. It might take a minute to run. What are we looping over?
+Instead of `fit()`, use a function that repeats fitting and scoring across folds. This is the same iteration idea as a `for` loop, handled for us by `fit_resamples()`. What changes between iterations, and what stays fixed?
+
+The workflow prepares its recipe separately on each fold's analysis data, then applies it to that fold's validation data. This keeps preprocessing from learning from the observations being scored.
 
 ```{r}
 # Fit the resampled training data.
@@ -233,11 +280,13 @@ cv_fit_01_rep |>
 
 Cross-validation is especially useful when trying to tune hyperparameters. If we use the testing data to tune hyperparameters, we run the risk of *overfitting*. Instead, we use the validation data.
 
-What parameters will we tune for a random forest model?
+What hyperparameters will we tune for a random forest model?
 
-- `mtry` number of predictors randomly sampled for each tree (default is the square root of the number of predictors)
-- `trees` number of trees in the ensemble (default is 500)
-- `min_n` minimum number of data points in a node to be split (default is 1)
+- `mtry`: number of candidate predictors randomly sampled at each split.
+- `trees`: number of trees in the ensemble.
+- `min_n`: minimum node-size setting, translated to `nodesize` by the `randomForest` engine.
+
+These are controls we compare across fits, not the split rules learned within one fitted forest. Defaults and their interpretation depend on the engine and mode.
   
 ---
 
@@ -252,7 +301,9 @@ rf_model_02
 
 ---
 
-Instead of `fit_resamples()`, we need a function made to deal with the grid of all possible tuning parameters. Note this is a for loop within a for loop. It might take a *while*.
+Instead of `fit_resamples()`, use `tune_grid()` to evaluate a grid of candidate hyperparameter combinations across the folds. Think of nested iteration: for each candidate, fit and score on each fold.
+
+For example, 12 candidate combinations and 10 folds require 120 workflow fits. Each forest fit itself grows many trees, so a wider search costs more computation.
 
 ```{r, message = FALSE}
 set.seed(42)
@@ -316,7 +367,7 @@ rf_wf_final
 
 ---
 
-Fit the final workflow on the entire training data and look at the predictive fit using the testing data without overfitting.
+Fit the selected workflow on the entire training set and assess it on the test set. This assessment estimates generalization; it does not guarantee that the model has no overfitting. Do not use these test scores to restart tuning.
 
 ```{r}
 # Fit the tuned workflow to the whole training dataset.
@@ -351,6 +402,26 @@ rf_fit_03 |>
   accuracy(truth = segment, estimate = .pred_class)
 ```
 
+## Uncertainty | Learn Patterns, Not Certainty
+
+Lecture 13 emphasized that uncertainty is a feature of life, not a flaw. Repeated folds let us see how predictive performance changes across samples; they do not remove all uncertainty.
+
+- Compare both average performance and variation across folds.
+- A small difference between candidate models may not be practically meaningful.
+- New customers may differ from the survey respondents used for training.
+
+When applying the selected model, retain the same feature definitions and preprocessing, and reassess performance as outcomes become available.
+
+## Faith and Learning One Step at a Time
+
+Lecture 13 paired this discussion with **Alma 32:21**: faith does not require perfect knowledge, and it is okay to be uncertain.
+
+**2 Nephi 28:30** describes learning line upon line. The hymn *Lead, Kindly Light* similarly asks for guidance one step at a time rather than a view of the entire path.
+
+In his April 2021 general conference message, President Russell M. Nelson encouraged increasing faith in Jesus Christ amid personal challenges and trusting His continuing love and promises.
+
+How can we acknowledge what we do not know while taking a thoughtful next step? In our analysis, what evidence would justify revising a prediction or recommendation?
+
 ## Wrapping Up
 
 *Summary*
@@ -358,14 +429,17 @@ rf_fit_03 |>
 - Introduced random forests and ensembles.
 - Did a walkthrough using cross-validation.
 - Demonstrated cross-validation for hyperparameter tuning.
+- Applied lecture 13's iteration and validation principles to learning patterns that generalize.
 
 *Next Time*
 
-- Deep learning.
+- Unsupervised learning with k-means clustering.
 
 *Supplementary Material*
 
 - *Tidy Modeling with R* Chapters 12 and 13
+- [Resampling for Evaluating Performance](https://www.tmwr.org/resampling.html).
+- [Random forests with the randomForest engine](https://parsnip.tidymodels.org/reference/details_rand_forest_randomForest.html).
 
 ## Exercise 15
 
